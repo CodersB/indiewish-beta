@@ -2,10 +2,6 @@ import Foundation
 import Testing
 @testable import Indie_Wish
 
-@Test func example() async throws {
-    // Write your test here and use APIs like `#expect(...)` to check expected conditions.
-}
-
 @Test("Configuration works properly")
 func testConfiguration() async throws {
     #if os(iOS)
@@ -13,8 +9,7 @@ func testConfiguration() async throws {
         // Configure IndieWish with fake values
         IndieWish.configure(
             secret: "TEST_SECRET",
-            overrideBaseURL: URL(string: "https://example.com")!
-        )
+            overrideBaseURL: URL(string: "https://example.com")!)
 
         // Give detached task a short moment to complete
         try await Task.sleep(nanoseconds: 50_000_000) // 50 ms

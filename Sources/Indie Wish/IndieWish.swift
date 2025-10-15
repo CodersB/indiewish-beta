@@ -101,27 +101,26 @@ public enum IndieWish: Sendable {
     public static func sendFeedback(
         title: String,
         description: String? = nil,
-        source: String = "ios"
+        source: String = "ios",
+        category: String = "feature"   // "feature" or "bug"
     ) async throws {
         let cfg = try await IndieWishCore.shared.currentConfig()
-        _ = try await IndieWishCore.shared.ensureSlug() // warm cache
 
-        var req = URLRequest(url: cfg.baseURL.appendingPathComponent("/api/feedback"))
-        req.httpMethod = "POST"
-        req.addValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.addValue(cfg.ingestSecret, forHTTPHeaderField: "x-ingest-secret")
+        var request = URLRequest(url: cfg.baseURL.appendingPathComponent("/api/feedback"))
+        request.httpMethod = "POST"
+        request.addValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.addValue(cfg.ingestSecret, forHTTPHeaderField: "x-ingest-secret")
 
         let payload: [String: Any] = [
-            // No slug needed; server infers from secret
             "title": title,
             "description": description ?? "",
-            "source": source
+            "source": source,
+            "category": category
         ]
 
-        req.httpBody = try JSONSerialization.data(withJSONObject: payload)
-        let (data, resp) = try await URLSession.shared.data(for: req)
-        guard let http = resp as? HTTPURLResponse else { throw IndieWishError.invalidResponse }
-        guard (200..<300).contains(http.statusCode) else {
+        request.httpBody = try JSONSerialization.data(withJSONObject: payload)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             let msg = String(data: data, encoding: .utf8) ?? "Server error"
             throw IndieWishError.server(msg)
         }

@@ -1,10 +1,3 @@
-//
-//  SwiftUIView.swift
-//  Indie Wish
-//
-//  Created by Balu on 10/14/25.
-//
-
 import SwiftUI
 
 @available(iOS 15.0, *)
@@ -17,34 +10,47 @@ public struct IndieWishFeedbackFormView: View {
     @State private var errorText: String?
     @State private var success = false
 
+    // Category (feature/bug) – bound to segmented control
+    @State private var isBug = false   // false = feature, true = bug
+
     public init() {}
 
     public var body: some View {
         NavigationView {
             Form {
-                Section(header: Text("Title")) {
-                    TextField("e.g. App crashed on save", text: $title)
+                // Category
+                Section(header: Text("Feedback type")) {
+                    Picker("What’s this about?", selection: $isBug) {
+                        Text("🚀 Feature Request").tag(false)
+                        Text("🐞 Bug Report").tag(true)
+                    }
+                }
+
+                // Title
+                Section(header: Text(isBug ? "Issue title" : "Title")) {
+                    TextField(isBug ? "e.g. Crash when saving" : "e.g. Sort tasks by priority",
+                              text: $title)
                         .textInputAutocapitalization(.sentences)
                 }
-                Section(header: Text("Description (optional)")) {
+
+                // Details
+                Section(header: Text(isBug ? "Describe the issue" : "Details")) {
                     TextEditor(text: $desc)
                         .frame(minHeight: 120)
                 }
 
                 if let errorText {
-                    Section {
-                        Text(errorText).foregroundColor(.red)
-                    }
+                    Section { Text(errorText).foregroundColor(.red) }
                 }
 
                 if success {
                     Section {
-                        Label("Thanks! Feedback sent.", systemImage: "checkmark.circle.fill")
-                            .foregroundColor(.green)
+                        Label("Thank you! Your feedback was sent.", systemImage: "checkmark.circle.fill")
+                            .font(.title3)
                     }
                 }
             }
-            .navigationTitle("Send Feedback")
+            .navigationTitle(isBug ? "Bug Report" : "Feature Request")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { dismiss() }
@@ -66,12 +72,18 @@ public struct IndieWishFeedbackFormView: View {
         success = false
         busy = true
         do {
+            let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+            let trimmedDesc = desc.trimmingCharacters(in: .whitespacesAndNewlines)
+            let category = isBug ? "bug" : "feature"
+
             try await IndieWish.sendFeedback(
-                title: title.trimmingCharacters(in: .whitespacesAndNewlines),
-                description: desc.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : desc
+                title: trimmedTitle,
+                description: trimmedDesc.isEmpty ? nil : trimmedDesc,
+                source: "ios",
+                category: category          // 👈 send category
             )
+
             success = true
-            // optionally auto-dismiss after a second
             await MainActor.run {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
                     dismiss()
@@ -82,4 +94,8 @@ public struct IndieWishFeedbackFormView: View {
         }
         busy = false
     }
+}
+
+#Preview {
+    IndieWishFeedbackFormView()
 }

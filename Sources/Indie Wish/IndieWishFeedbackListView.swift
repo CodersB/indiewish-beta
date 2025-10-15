@@ -69,3 +69,7 @@ public struct IndieWishFeedbackListView: View {
         busy = false
     }
 }
+
+#Preview {
+    IndieWishFeedbackListView()
+}
