@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 
 // MARK: - Errors
 
@@ -21,7 +22,7 @@ public enum IndieWishError: Error, LocalizedError, Sendable {
 public struct IndieWishConfig: Sendable {
     public let baseURL: URL
     public let ingestSecret: String
-    public var cachedSlug: String? // filled after first fetch
+    public var cachedSlug: String?
 
     public init(baseURL: URL, ingestSecret: String, cachedSlug: String? = nil) {
         self.baseURL = baseURL
@@ -30,23 +31,18 @@ public struct IndieWishConfig: Sendable {
     }
 }
 
-// MARK: - Core (Actor)
+// MARK: - Core Actor
 
 @available(iOS 15.0, *)
 actor IndieWishCore {
     static let shared = IndieWishCore()
-
-    // Change this default if you ever move hosts; publish a new package version.
     private static let DEFAULT_BASE_URL = URL(string: "https://indie-wish.vercel.app")!
-
     private var config: IndieWishConfig?
 
     func configure(secret: String, overrideBaseURL: URL? = nil) {
         let base = overrideBaseURL ?? Self.DEFAULT_BASE_URL
-        self.config = IndieWishConfig(baseURL: base, ingestSecret: secret, cachedSlug: nil)
+        self.config = IndieWishConfig(baseURL: base, ingestSecret: secret)
     }
-
-    func isConfigured() -> Bool { config != nil }
 
     func currentConfig() throws -> IndieWishConfig {
         guard let c = config else { throw IndieWishError.notConfigured }
@@ -59,7 +55,6 @@ actor IndieWishCore {
         config = c
     }
 
-    /// Ensure we know the board slug (cached after first call)
     func ensureSlug() async throws -> String {
         if let c = config, let slug = c.cachedSlug { return slug }
         guard let c = config else { throw IndieWishError.notConfigured }
@@ -69,10 +64,8 @@ actor IndieWishCore {
         req.addValue(c.ingestSecret, forHTTPHeaderField: "x-ingest-secret")
 
         let (data, resp) = try await URLSession.shared.data(for: req)
-        guard let http = resp as? HTTPURLResponse else { throw IndieWishError.invalidResponse }
-        guard (200..<300).contains(http.statusCode) else {
-            let msg = String(data: data, encoding: .utf8) ?? "Server error"
-            throw IndieWishError.server(msg)
+        guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            throw IndieWishError.invalidResponse
         }
 
         struct Info: Decodable { let slug: String }
@@ -82,72 +75,73 @@ actor IndieWishCore {
     }
 }
 
-// MARK: - Public Facade
+// MARK: - Public API
 
 @available(iOS 15.0, *)
 public enum IndieWish: Sendable {
-    /// Configure once (only the secret is required).
+    
+    // MARK: Configuration
     public static func configure(secret: String, overrideBaseURL: URL? = nil) {
         Task.detached(priority: .utility) {
             await IndieWishCore.shared.configure(secret: secret, overrideBaseURL: overrideBaseURL)
         }
     }
-
-    public static func isConfigured() async -> Bool {
-        await IndieWishCore.shared.isConfigured()
-    }
-
-    /// Send feedback — board slug is auto-resolved by secret (cached after first call).
+    
     public static func sendFeedback(
         title: String,
         description: String? = nil,
         source: String = "ios",
-        category: String = "feature"   // "feature" or "bug"
+        category: String = "feature"
     ) async throws {
         let cfg = try await IndieWishCore.shared.currentConfig()
+        let url = cfg.baseURL.appendingPathComponent("/api/feedback")
 
-        var request = URLRequest(url: cfg.baseURL.appendingPathComponent("/api/feedback"))
-        request.httpMethod = "POST"
-        request.addValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.addValue(cfg.ingestSecret, forHTTPHeaderField: "x-ingest-secret")
+        // Now Sendable, so this await is OK
+        let metadata = await captureMetadata()
 
-        let payload: [String: Any] = [
+        var payload: [String: Any] = [
             "title": title,
             "description": description ?? "",
             "source": source,
             "category": category
         ]
+        // Merge String:String into String:Any
+        for (k, v) in metadata { payload[k] = v }
 
-        request.httpBody = try JSONSerialization.data(withJSONObject: payload)
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.addValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.addValue(cfg.ingestSecret, forHTTPHeaderField: "x-ingest-secret")
+        req.httpBody = try JSONSerialization.data(withJSONObject: payload)
+
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             let msg = String(data: data, encoding: .utf8) ?? "Server error"
             throw IndieWishError.server(msg)
         }
     }
-
-    /// Fetch recent public feedback (for in-app listing & upvotes)
+    
+    // MARK: Public listing & upvote
     public static func fetchPublicItems(limit: Int = 50) async throws -> [PublicItem] {
         let cfg = try await IndieWishCore.shared.currentConfig()
         let slug = try await IndieWishCore.shared.ensureSlug()
-
+        
         var url = cfg.baseURL.appendingPathComponent("/api/public-feedback")
         url.append(queryItems: [URLQueryItem(name: "slug", value: slug)])
-
+        
         let (data, resp) = try await URLSession.shared.data(from: url)
         guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             throw IndieWishError.invalidResponse
         }
+        
         struct Payload: Decodable { let items: [PublicItem] }
-        let decoded = try JSONDecoder().decode(Payload.self, from: data)
-        return decoded.items
+        return try JSONDecoder().decode(Payload.self, from: data).items
     }
-
-    /// Public upvote (device-level; server does best-effort increment)
+    
     public static func upvote(feedbackId: String) async throws {
         let cfg = try await IndieWishCore.shared.currentConfig()
         let slug = try await IndieWishCore.shared.ensureSlug()
-
+        
         var req = URLRequest(url: cfg.baseURL.appendingPathComponent("/api/public-upvote"))
         req.httpMethod = "POST"
         req.addValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -155,15 +149,38 @@ public enum IndieWish: Sendable {
             "feedback_id": feedbackId,
             "board_slug": slug
         ])
-
+        
         let (_, resp) = try await URLSession.shared.data(for: req)
         guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             throw IndieWishError.invalidResponse
         }
     }
+    
+    @MainActor
+    private static func captureMetadata() -> [String: String] {
+        let bundle = Bundle.main
+        let appName = bundle.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String ??
+        bundle.object(forInfoDictionaryKey: "CFBundleName") as? String ?? "Unknown"
+        let appVersion = bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
+        let buildNumber = bundle.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "0"
+        let osVersion = UIDevice.current.systemVersion
+        let deviceModel = UIDevice.current.model
+        let locale = Locale.current.identifier
+        let timezone = TimeZone.current.identifier
+        
+        return [
+            "app_name": appName,
+            "app_version": appVersion,
+            "build_number": buildNumber,
+            "os_version": osVersion,
+            "device_model": deviceModel,
+            "locale": locale,
+            "timezone": timezone
+        ]
+    }
 }
 
-// Small helpers
+// MARK: - Helpers
 
 private extension URL {
     mutating func append(queryItems: [URLQueryItem]) {
@@ -173,7 +190,8 @@ private extension URL {
     }
 }
 
-// Public models (match your /api/public-feedback payload)
+// MARK: - Models
+
 public struct PublicItem: Decodable, Sendable {
     public let id: String
     public let title: String

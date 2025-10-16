@@ -4,13 +4,11 @@ import SwiftUI
 public struct IndieWishFeedbackFormView: View {
     @Environment(\.dismiss) private var dismiss
 
-    @State private var title: String = ""
-    @State private var desc: String = ""
+    @State private var title = ""
+    @State private var desc = ""
     @State private var busy = false
     @State private var errorText: String?
     @State private var success = false
-
-    // Category (feature/bug) – bound to segmented control
     @State private var isBug = false   // false = feature, true = bug
 
     public init() {}
@@ -18,7 +16,6 @@ public struct IndieWishFeedbackFormView: View {
     public var body: some View {
         NavigationView {
             Form {
-                // Category
                 Section(header: Text("Feedback type")) {
                     Picker("What’s this about?", selection: $isBug) {
                         Text("🚀 Feature Request").tag(false)
@@ -26,14 +23,11 @@ public struct IndieWishFeedbackFormView: View {
                     }
                 }
 
-                // Title
                 Section(header: Text(isBug ? "Issue title" : "Title")) {
-                    TextField(isBug ? "e.g. Crash when saving" : "e.g. Sort tasks by priority",
-                              text: $title)
+                    TextField(isBug ? "e.g. Crash when saving" : "e.g. Sort tasks by priority", text: $title)
                         .textInputAutocapitalization(.sentences)
                 }
 
-                // Details
                 Section(header: Text(isBug ? "Describe the issue" : "Details")) {
                     TextEditor(text: $desc)
                         .frame(minHeight: 120)
@@ -79,15 +73,12 @@ public struct IndieWishFeedbackFormView: View {
             try await IndieWish.sendFeedback(
                 title: trimmedTitle,
                 description: trimmedDesc.isEmpty ? nil : trimmedDesc,
-                source: "ios",
-                category: category          // 👈 send category
+                category: category
             )
 
             success = true
             await MainActor.run {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                    dismiss()
-                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { dismiss() }
             }
         } catch {
             errorText = error.localizedDescription
@@ -96,6 +87,4 @@ public struct IndieWishFeedbackFormView: View {
     }
 }
 
-#Preview {
-    IndieWishFeedbackFormView()
-}
+#Preview { IndieWishFeedbackFormView() }
