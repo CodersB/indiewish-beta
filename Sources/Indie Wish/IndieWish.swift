@@ -151,7 +151,7 @@ public struct PublicItem: Decodable, Sendable {
     public let status: String
     public let source: String?
     public let created_at: String
-    public let votes: Int?
+    public var votes: Int?   // <-- make this 'var'
 }
 
 // MARK: - Public Facade
