@@ -10,9 +10,12 @@ public enum IndieWishError: Error, LocalizedError, Sendable {
 
     public var errorDescription: String? {
         switch self {
-        case .notConfigured:   return "IndieWish is not configured. Call IndieWish.configure(secret:) first."
-        case .invalidResponse: return "Invalid response from server."
-        case .server(let msg): return msg
+        case .notConfigured:
+            "IndieWish is not configured. Call IndieWish.configure(secret:) first."
+        case .invalidResponse:
+            "Invalid response from server."
+        case .server(let msg):
+            msg
         }
     }
 }
@@ -31,18 +34,23 @@ public struct IndieWishConfig: Sendable {
     }
 }
 
-// MARK: - Core Actor
+// MARK: - Core (Actor)
 
 @available(iOS 15.0, *)
 actor IndieWishCore {
     static let shared = IndieWishCore()
+
+    /// Update and release a new package version if you ever move hosts.
     private static let DEFAULT_BASE_URL = URL(string: "https://indie-wish.vercel.app")!
+
     private var config: IndieWishConfig?
 
     func configure(secret: String, overrideBaseURL: URL? = nil) {
         let base = overrideBaseURL ?? Self.DEFAULT_BASE_URL
         self.config = IndieWishConfig(baseURL: base, ingestSecret: secret)
     }
+
+    func isConfigured() -> Bool { config != nil }
 
     func currentConfig() throws -> IndieWishConfig {
         guard let c = config else { throw IndieWishError.notConfigured }
@@ -55,8 +63,11 @@ actor IndieWishCore {
         config = c
     }
 
+    /// Resolve board slug from ingest secret (cached after first call).
     func ensureSlug() async throws -> String {
-        if let c = config, let slug = c.cachedSlug { return slug }
+        if let c = config, let slug = c.cachedSlug {
+            return slug
+        }
         guard let c = config else { throw IndieWishError.notConfigured }
 
         var req = URLRequest(url: c.baseURL.appendingPathComponent("/api/ingest-info"))
@@ -65,7 +76,8 @@ actor IndieWishCore {
 
         let (data, resp) = try await URLSession.shared.data(for: req)
         guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-            throw IndieWishError.invalidResponse
+            let msg = String(data: data, encoding: .utf8) ?? "Server error"
+            throw IndieWishError.server(msg)
         }
 
         struct Info: Decodable { let slug: String }
@@ -75,122 +87,62 @@ actor IndieWishCore {
     }
 }
 
-// MARK: - Public API
+// MARK: - Device Metadata (MainActor)
 
-@available(iOS 15.0, *)
-public enum IndieWish: Sendable {
-    
-    // MARK: Configuration
-    public static func configure(secret: String, overrideBaseURL: URL? = nil) {
-        Task.detached(priority: .utility) {
-            await IndieWishCore.shared.configure(secret: secret, overrideBaseURL: overrideBaseURL)
-        }
-    }
-    
-    public static func sendFeedback(
-        title: String,
-        description: String? = nil,
-        source: String = "ios",
-        category: String = "feature"
-    ) async throws {
-        let cfg = try await IndieWishCore.shared.currentConfig()
-        let url = cfg.baseURL.appendingPathComponent("/api/feedback")
+@MainActor
+private func captureDeviceMeta() -> DeviceMeta {
+    let bundle = Bundle.main
+    let appName =
+        (bundle.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String)
+        ?? (bundle.object(forInfoDictionaryKey: "CFBundleName") as? String)
+        ?? bundle.bundleIdentifier
+        ?? "Unknown"
 
-        // Now Sendable, so this await is OK
-        let metadata = await captureMetadata()
+    let appVersion = (bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "0"
+    let buildNumber = (bundle.object(forInfoDictionaryKey: "CFBundleVersion") as? String) ?? "0"
+    let osVersion = "iOS \(UIDevice.current.systemVersion)"
+    let deviceModel = UIDevice.current.model
+    let locale = Locale.current.identifier
+    let timezone = TimeZone.current.identifier
 
-        var payload: [String: Any] = [
-            "title": title,
-            "description": description ?? "",
-            "source": source,
-            "category": category
-        ]
-        // Merge String:String into String:Any
-        for (k, v) in metadata { payload[k] = v }
-
-        var req = URLRequest(url: url)
-        req.httpMethod = "POST"
-        req.addValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.addValue(cfg.ingestSecret, forHTTPHeaderField: "x-ingest-secret")
-        req.httpBody = try JSONSerialization.data(withJSONObject: payload)
-
-        let (data, resp) = try await URLSession.shared.data(for: req)
-        guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-            let msg = String(data: data, encoding: .utf8) ?? "Server error"
-            throw IndieWishError.server(msg)
-        }
-    }
-    
-    // MARK: Public listing & upvote
-    public static func fetchPublicItems(limit: Int = 50) async throws -> [PublicItem] {
-        let cfg = try await IndieWishCore.shared.currentConfig()
-        let slug = try await IndieWishCore.shared.ensureSlug()
-        
-        var url = cfg.baseURL.appendingPathComponent("/api/public-feedback")
-        url.append(queryItems: [URLQueryItem(name: "slug", value: slug)])
-        
-        let (data, resp) = try await URLSession.shared.data(from: url)
-        guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-            throw IndieWishError.invalidResponse
-        }
-        
-        struct Payload: Decodable { let items: [PublicItem] }
-        return try JSONDecoder().decode(Payload.self, from: data).items
-    }
-    
-    public static func upvote(feedbackId: String) async throws {
-        let cfg = try await IndieWishCore.shared.currentConfig()
-        let slug = try await IndieWishCore.shared.ensureSlug()
-        
-        var req = URLRequest(url: cfg.baseURL.appendingPathComponent("/api/public-upvote"))
-        req.httpMethod = "POST"
-        req.addValue("application/json", forHTTPHeaderField: "Content-Type")
-        req.httpBody = try JSONSerialization.data(withJSONObject: [
-            "feedback_id": feedbackId,
-            "board_slug": slug
-        ])
-        
-        let (_, resp) = try await URLSession.shared.data(for: req)
-        guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
-            throw IndieWishError.invalidResponse
-        }
-    }
-    
-    @MainActor
-    private static func captureMetadata() -> [String: String] {
-        let bundle = Bundle.main
-        let appName = bundle.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String ??
-        bundle.object(forInfoDictionaryKey: "CFBundleName") as? String ?? "Unknown"
-        let appVersion = bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
-        let buildNumber = bundle.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "0"
-        let osVersion = UIDevice.current.systemVersion
-        let deviceModel = UIDevice.current.model
-        let locale = Locale.current.identifier
-        let timezone = TimeZone.current.identifier
-        
-        return [
-            "app_name": appName,
-            "app_version": appVersion,
-            "build_number": buildNumber,
-            "os_version": osVersion,
-            "device_model": deviceModel,
-            "locale": locale,
-            "timezone": timezone
-        ]
-    }
+    return DeviceMeta(
+        app_name: appName,
+        app_version: appVersion,
+        build_number: buildNumber,
+        os_version: osVersion,
+        device_model: deviceModel,
+        locale: locale,
+        timezone: timezone
+    )
 }
 
-// MARK: - Helpers
-
-private extension URL {
-    mutating func append(queryItems: [URLQueryItem]) {
-        var comps = URLComponents(url: self, resolvingAgainstBaseURL: false) ?? URLComponents()
-        comps.queryItems = (comps.queryItems ?? []) + queryItems
-        if let url = comps.url { self = url }
-    }
+private struct DeviceMeta: Codable, Sendable {
+    let app_name: String
+    let app_version: String
+    let build_number: String
+    let os_version: String
+    let device_model: String
+    let locale: String
+    let timezone: String
 }
 
-// MARK: - Models
+// MARK: - Payloads & Models
+
+private struct FeedbackPayload: Codable, Sendable {
+    let title: String
+    let description: String?
+    let source: String        // "ios"
+    let category: String      // "feature" or "bug"
+
+    // Optional device metadata (server stores in feedback_meta)
+    let app_name: String?
+    let app_version: String?
+    let build_number: String?
+    let os_version: String?
+    let device_model: String?
+    let locale: String?
+    let timezone: String?
+}
 
 public struct PublicItem: Decodable, Sendable {
     public let id: String
@@ -200,4 +152,109 @@ public struct PublicItem: Decodable, Sendable {
     public let source: String?
     public let created_at: String
     public let votes: Int?
+}
+
+// MARK: - Public Facade
+
+@available(iOS 15.0, *)
+public enum IndieWish: Sendable {
+    /// Configure once (usually at app start).
+    public static func configure(secret: String, overrideBaseURL: URL? = nil) {
+        Task.detached {
+            await IndieWishCore.shared.configure(secret: secret, overrideBaseURL: overrideBaseURL)
+        }
+    }
+
+    public static func isConfigured() async -> Bool {
+        await IndieWishCore.shared.isConfigured()
+    }
+
+    /// Send feedback (Feature or Bug) with automatic device metadata.
+    public static func sendFeedback(
+        title: String,
+        description: String? = nil,
+        source: String = "ios",
+        category: String = "feature"   // or "bug"
+    ) async throws {
+        let cfg = try await IndieWishCore.shared.currentConfig()
+
+        // Capture app/device info on main actor
+        let m = await captureDeviceMeta()
+
+        // Build a Codable payload (avoid [String: Any])
+        let payload = FeedbackPayload(
+            title: title,
+            description: description,
+            source: source,
+            category: category,
+            app_name: m.app_name,
+            app_version: m.app_version,
+            build_number: m.build_number,
+            os_version: m.os_version,
+            device_model: m.device_model,
+            locale: m.locale,
+            timezone: m.timezone
+        )
+
+        var req = URLRequest(url: cfg.baseURL.appendingPathComponent("/api/feedback"))
+        req.httpMethod = "POST"
+        req.addValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.addValue(cfg.ingestSecret, forHTTPHeaderField: "x-ingest-secret")
+        req.httpBody = try JSONEncoder().encode(payload)
+
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        guard let http = resp as? HTTPURLResponse else {
+            throw IndieWishError.invalidResponse
+        }
+        guard (200..<300).contains(http.statusCode) else {
+            let msg = String(data: data, encoding: .utf8) ?? "Server error"
+            throw IndieWishError.server(msg)
+        }
+    }
+
+    /// Fetch recent public items for this board (feature requests visible on web).
+    public static func fetchPublicItems(limit: Int = 50) async throws -> [PublicItem] {
+        let cfg = try await IndieWishCore.shared.currentConfig()
+        let slug = try await IndieWishCore.shared.ensureSlug()
+
+        var url = cfg.baseURL.appendingPathComponent("/api/public-feedback")
+        url.append(queryItems: [URLQueryItem(name: "slug", value: slug)])
+
+        let (data, resp) = try await URLSession.shared.data(from: url)
+        guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            throw IndieWishError.invalidResponse
+        }
+
+        struct Payload: Decodable { let items: [PublicItem] }
+        return try JSONDecoder().decode(Payload.self, from: data).items
+    }
+
+    /// Public upvote (device-level; server increments best-effort).
+    public static func upvote(feedbackId: String) async throws {
+        let cfg = try await IndieWishCore.shared.currentConfig()
+        let slug = try await IndieWishCore.shared.ensureSlug()
+
+        var req = URLRequest(url: cfg.baseURL.appendingPathComponent("/api/public-upvote"))
+        req.httpMethod = "POST"
+        req.addValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.httpBody = try JSONSerialization.data(withJSONObject: [
+            "feedback_id": feedbackId,
+            "board_slug": slug
+        ])
+
+        let (_, resp) = try await URLSession.shared.data(for: req)
+        guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            throw IndieWishError.invalidResponse
+        }
+    }
+}
+
+// MARK: - URL helper
+
+private extension URL {
+    mutating func append(queryItems: [URLQueryItem]) {
+        var comps = URLComponents(url: self, resolvingAgainstBaseURL: false) ?? URLComponents()
+        comps.queryItems = (comps.queryItems ?? []) + queryItems
+        if let url = comps.url { self = url }
+    }
 }
