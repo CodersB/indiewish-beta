@@ -79,22 +79,28 @@ public struct IndieWishFeedbackListView: View {
         }
     }
 
-    // MARK: - Upvote (optimistic with rollback)
+    // MARK: - Upvote (server-synced)
 
     private func upvote(_ id: String) async {
         guard !votedIds.contains(id), !votingIds.contains(id) else { return }
         err = nil
         votingIds.insert(id)
 
-        // Optimistic UI: bump local count immediately
+        // Optimistic: bump local count immediately
         if let idx = items.firstIndex(where: { $0.id == id }) {
             items[idx].votes = (items[idx].votes ?? 0) + 1
         }
 
         do {
-            try await IndieWish.upvote(feedbackId: id) // <- SDK sends x-ingest-secret header
+            // ✅ Fetch updated count from server
+            let newCount = try await IndieWish.upvote(feedbackId: id)
             votedIds.insert(id)
             Self.saveVotedIds(votedIds)
+
+            // ✅ Update item with actual server vote total
+            if let idx = items.firstIndex(where: { $0.id == id }) {
+                items[idx].votes = newCount
+            }
         } catch {
             // Rollback on failure
             if let idx = items.firstIndex(where: { $0.id == id }) {
@@ -105,7 +111,7 @@ public struct IndieWishFeedbackListView: View {
 
         votingIds.remove(id)
     }
-
+    
     // MARK: - Local persistence for “already voted”
 
     private static let votedKey = "iw_voted_ids"

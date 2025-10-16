@@ -39,8 +39,6 @@ public struct IndieWishConfig: Sendable {
 @available(iOS 15.0, *)
 actor IndieWishCore {
     static let shared = IndieWishCore()
-
-    /// Update and release a new package version if you ever move hosts.
     private static let DEFAULT_BASE_URL = URL(string: "https://indie-wish.vercel.app")!
 
     private var config: IndieWishConfig?
@@ -63,11 +61,8 @@ actor IndieWishCore {
         config = c
     }
 
-    /// Resolve board slug from ingest secret (cached after first call).
     func ensureSlug() async throws -> String {
-        if let c = config, let slug = c.cachedSlug {
-            return slug
-        }
+        if let c = config, let slug = c.cachedSlug { return slug }
         guard let c = config else { throw IndieWishError.notConfigured }
 
         var req = URLRequest(url: c.baseURL.appendingPathComponent("/api/ingest-info"))
@@ -87,13 +82,12 @@ actor IndieWishCore {
     }
 }
 
-// MARK: - Device Metadata (MainActor)
+// MARK: - Device Metadata
 
 @MainActor
 private func captureDeviceMeta() -> DeviceMeta {
     let bundle = Bundle.main
-    let appName =
-        (bundle.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String)
+    let appName = (bundle.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String)
         ?? (bundle.object(forInfoDictionaryKey: "CFBundleName") as? String)
         ?? bundle.bundleIdentifier
         ?? "Unknown"
@@ -131,10 +125,8 @@ private struct DeviceMeta: Codable, Sendable {
 private struct FeedbackPayload: Codable, Sendable {
     let title: String
     let description: String?
-    let source: String        // "ios"
-    let category: String      // "feature" or "bug"
-
-    // Optional device metadata (server stores in feedback_meta)
+    let source: String
+    let category: String
     let app_name: String?
     let app_version: String?
     let build_number: String?
@@ -151,14 +143,18 @@ public struct PublicItem: Decodable, Sendable {
     public let status: String
     public let source: String?
     public let created_at: String
-    public var votes: Int?   // <-- make this 'var'
+    public var votes: Int?
+}
+
+public struct UpvoteResponse: Decodable, Sendable {
+    public let ok: Bool
+    public let votes: Int?
 }
 
 // MARK: - Public Facade
 
 @available(iOS 15.0, *)
 public enum IndieWish: Sendable {
-    /// Configure once (usually at app start).
     public static func configure(secret: String, overrideBaseURL: URL? = nil) {
         Task.detached {
             await IndieWishCore.shared.configure(secret: secret, overrideBaseURL: overrideBaseURL)
@@ -169,19 +165,15 @@ public enum IndieWish: Sendable {
         await IndieWishCore.shared.isConfigured()
     }
 
-    /// Send feedback (Feature or Bug) with automatic device metadata.
     public static func sendFeedback(
         title: String,
         description: String? = nil,
         source: String = "ios",
-        category: String = "feature"   // or "bug"
+        category: String = "feature"
     ) async throws {
         let cfg = try await IndieWishCore.shared.currentConfig()
-
-        // Capture app/device info on main actor
         let m = await captureDeviceMeta()
 
-        // Build a Codable payload (avoid [String: Any])
         let payload = FeedbackPayload(
             title: title,
             description: description,
@@ -203,16 +195,12 @@ public enum IndieWish: Sendable {
         req.httpBody = try JSONEncoder().encode(payload)
 
         let (data, resp) = try await URLSession.shared.data(for: req)
-        guard let http = resp as? HTTPURLResponse else {
-            throw IndieWishError.invalidResponse
-        }
-        guard (200..<300).contains(http.statusCode) else {
+        guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             let msg = String(data: data, encoding: .utf8) ?? "Server error"
             throw IndieWishError.server(msg)
         }
     }
 
-    /// Fetch recent public items for this board (feature requests visible on web).
     public static func fetchPublicItems(limit: Int = 50) async throws -> [PublicItem] {
         let cfg = try await IndieWishCore.shared.currentConfig()
         let slug = try await IndieWishCore.shared.ensureSlug()
@@ -229,23 +217,30 @@ public enum IndieWish: Sendable {
         return try JSONDecoder().decode(Payload.self, from: data).items
     }
 
-    /// Public upvote (device-level; server increments best-effort).
-    public static func upvote(feedbackId: String) async throws {
+    // MARK: - Upvote (SDK function using secret header)
+    @discardableResult
+    public static func upvote(feedbackId: String) async throws -> Int {
         let cfg = try await IndieWishCore.shared.currentConfig()
-        let slug = try await IndieWishCore.shared.ensureSlug()
 
         var req = URLRequest(url: cfg.baseURL.appendingPathComponent("/api/public-upvote"))
         req.httpMethod = "POST"
         req.addValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.addValue(cfg.ingestSecret, forHTTPHeaderField: "x-ingest-secret") // 👈 use secret header
         req.httpBody = try JSONSerialization.data(withJSONObject: [
-            "feedback_id": feedbackId,
-            "board_slug": slug
+            "feedback_id": feedbackId
         ])
 
-        let (_, resp) = try await URLSession.shared.data(for: req)
+        let (data, resp) = try await URLSession.shared.data(for: req)
         guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            let msg = String(data: data, encoding: .utf8) ?? "Server error"
+            throw IndieWishError.server(msg)
+        }
+
+        let decoded = try JSONDecoder().decode(UpvoteResponse.self, from: data)
+        guard decoded.ok, let votes = decoded.votes else {
             throw IndieWishError.invalidResponse
         }
+        return votes
     }
 }
 
