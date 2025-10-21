@@ -122,6 +122,29 @@ actor IndieWishCore {
         self.userProfile = profile
     }
     
+    func mergeUserProfile(
+        email: String?? = nil,
+        subscriptionStatus: String?? = nil,
+        subscriptionExpiresAt: Date?? = nil,
+        customMetadata: [String: String]?? = nil
+    ) {
+        // Merge with existing profile (double optional allows explicit nil setting)
+        let current = self.userProfile
+        
+        // Use double optional unwrapping: nil = don't change, .some(nil) = set to nil, .some(value) = set to value
+        let newEmail = email.flatMap { $0 } ?? current?.email
+        let newStatus = subscriptionStatus.flatMap { $0 } ?? current?.subscriptionStatus ?? "unknown"
+        let newExpires = subscriptionExpiresAt.flatMap { $0 } ?? current?.subscriptionExpiresAt
+        let newMetadata = customMetadata.flatMap { $0 } ?? current?.customMetadata
+        
+        self.userProfile = UserProfile(
+            subscriptionStatus: newStatus,
+            subscriptionExpiresAt: newExpires,
+            email: newEmail,
+            customMetadata: newMetadata
+        )
+    }
+    
     func getUserProfile() -> UserProfile? {
         return userProfile
     }
@@ -335,29 +358,34 @@ public enum IndieWish: Sendable {
         billingCycle: BillingCycle? = nil,
         amount: String? = nil
     ) {
-        var metadata: [String: String] = [:]
-        if let cycle = billingCycle {
-            metadata["billing_cycle"] = cycle.rawValue
-        }
-        if let amount = amount {
-            metadata["amount"] = amount
-        }
-        
-        let profile = UserProfile(
-            subscriptionStatus: subscription?.rawValue ?? "unknown",
-            email: email,
-            customMetadata: metadata.isEmpty ? nil : metadata
-        )
-        
         Task.detached {
-            await IndieWishCore.shared.updateUserProfile(profile)
+            var metadata: [String: String]? = nil
+            if billingCycle != nil || amount != nil {
+                metadata = [:]
+                if let cycle = billingCycle {
+                    metadata!["billing_cycle"] = cycle.rawValue
+                }
+                if let amt = amount {
+                    metadata!["amount"] = amt
+                }
+            }
+            
+            // Merge with existing profile instead of replacing
+            await IndieWishCore.shared.mergeUserProfile(
+                email: .some(email),
+                subscriptionStatus: subscription.map { .some($0.rawValue) },
+                subscriptionExpiresAt: nil,
+                customMetadata: metadata.map { .some($0) }
+            )
         }
     }
     
     /// Update only email (convenience method)
     /// Example: IndieWish.setEmail("user@example.com")
     public static func setEmail(_ email: String?) {
-        updateUser(email: email)
+        Task.detached {
+            await IndieWishCore.shared.mergeUserProfile(email: .some(email))
+        }
     }
     
     /// Update only subscription (convenience method)
