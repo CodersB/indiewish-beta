@@ -4,26 +4,23 @@
 import PackageDescription
 
 let package = Package(
-    name: "Indie Wish",
+    name: "IndieWish",
     platforms: [
-            .iOS(.v15)
-        ],
+        .iOS(.v15)
+    ],
     products: [
-        // Products define the executables and libraries a package produces, making them visible to other packages.
         .library(
-            name: "Indie Wish",
-            targets: ["Indie Wish"]
+            name: "IndieWish",
+            targets: ["IndieWish"]
         ),
     ],
     targets: [
-        // Targets are the basic building blocks of a package, defining a module or a test suite.
-        // Targets can depend on other targets in this package and products from dependencies.
         .target(
-            name: "Indie Wish"
+            name: "IndieWish"
         ),
         .testTarget(
-            name: "Indie WishTests",
-            dependencies: ["Indie Wish"]
+            name: "IndieWishTests",
+            dependencies: ["IndieWish"]
         ),
     ]
 )
