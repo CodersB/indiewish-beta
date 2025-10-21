@@ -273,6 +273,7 @@ private struct FeedbackPayload: Codable, Sendable {
     let category: String
     
     // Device info
+    let app_name: String?
     let app_version: String?
     let os_version: String?
     let device_model: String?
@@ -445,6 +446,7 @@ public enum IndieWish: Sendable {
             description: description,
             source: source,
             category: category,
+            app_name: m.app_name,
             app_version: m.app_version,
             os_version: m.os_version,
             device_model: m.device_model,
